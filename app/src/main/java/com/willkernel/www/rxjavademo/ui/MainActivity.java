@@ -1,6 +1,9 @@
 package com.willkernel.www.rxjavademo.ui;
 
+import android.Manifest;
+import android.content.pm.PackageManager;
 import android.os.Bundle;
+import android.support.v4.app.ActivityCompat;
 import android.support.v7.app.AppCompatActivity;
 import android.util.Log;
 import android.widget.TextView;
@@ -28,18 +31,15 @@ import io.reactivex.FlowableOnSubscribe;
 import io.reactivex.Observable;
 import io.reactivex.ObservableEmitter;
 import io.reactivex.ObservableOnSubscribe;
-import io.reactivex.ObservableSource;
 import io.reactivex.Observer;
 import io.reactivex.android.schedulers.AndroidSchedulers;
 import io.reactivex.disposables.Disposable;
-import io.reactivex.functions.BiFunction;
 import io.reactivex.functions.Consumer;
-import io.reactivex.functions.Function;
-import io.reactivex.functions.Predicate;
 import io.reactivex.schedulers.Schedulers;
 
 public class MainActivity extends AppCompatActivity {
     private static final String TAG = "MainActivity";
+    private static final int REQUEST_CODE = 10;
     private RetrofitHelper retrofitHelper = new RetrofitHelper();
     private TextView text;
 
@@ -47,7 +47,10 @@ public class MainActivity extends AppCompatActivity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
-        text = (TextView) findViewById(R.id.text);
+        if (ActivityCompat.checkSelfPermission(this, Manifest.permission.WRITE_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED) {
+            ActivityCompat.requestPermissions(this, new String[]{Manifest.permission.WRITE_EXTERNAL_STORAGE}, REQUEST_CODE);
+        }
+        text = findViewById(R.id.text);
 //        test1();
 //        test2();
 //        test3();
@@ -89,31 +92,28 @@ public class MainActivity extends AppCompatActivity {
      * 比如几十M的时候，全部先读入内存肯定不是明智的做法，因此我们可以一边读取一边处理，实现的代码如下
      */
     private void test33() {
-        Flowable.create(new FlowableOnSubscribe<String>() {
-            @Override
-            public void subscribe(FlowableEmitter<String> e) throws Exception {
-                try {
+        Flowable.create((FlowableOnSubscribe<String>) e -> {
+            try {
 //                    URL url=getClass().getResource("test.txt");
 //                    Log.e(TAG,"url="+url);
 //                    FileReader reader =new FileReader(url.getFile());
 //                    FileReader reader =new FileReader("file:///android_asset/test.txt");
-                    InputStream inputStream = getResources().getAssets().open("test.txt");
-                    InputStreamReader inputStreamReader = new InputStreamReader(inputStream);
-                    BufferedReader bufferedReader = new BufferedReader(inputStreamReader);
-                    String str;
-                    while ((str = bufferedReader.readLine()) != null && !e.isCancelled()) {
-                        while (e.requested() == 0) {
-                            if (e.isCancelled()) break;
-                        }
-                        e.onNext(str);
+                InputStream inputStream = getResources().getAssets().open("test.txt");
+                InputStreamReader inputStreamReader = new InputStreamReader(inputStream);
+                BufferedReader bufferedReader = new BufferedReader(inputStreamReader);
+                String str;
+                while ((str = bufferedReader.readLine()) != null && !e.isCancelled()) {
+                    while (e.requested() == 0) {
+                        if (e.isCancelled()) break;
                     }
-                    bufferedReader.close();
-                    inputStreamReader.close();
-                    inputStream.close();
-                    e.onComplete();
-                } catch (IOException e1) {
-                    e1.printStackTrace();
+                    e.onNext(str);
                 }
+                bufferedReader.close();
+                inputStreamReader.close();
+                inputStream.close();
+                e.onComplete();
+            } catch (IOException e1) {
+                e1.printStackTrace();
             }
         }, BackpressureStrategy.ERROR)
                 .subscribeOn(Schedulers.io())
@@ -151,25 +151,21 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void test32() {
-        Flowable
-                .create(new FlowableOnSubscribe<Integer>() {
-                    @Override
-                    public void subscribe(FlowableEmitter<Integer> emitter) throws Exception {
-                        Log.d(TAG, "First requested = " + emitter.requested());
-                        boolean flag;
-                        for (int i = 0; ; i++) {
-                            flag = false;
-                            while (emitter.requested() == 0) {
-                                if (!flag) {
-                                    Log.d(TAG, "Oh no! I can't emit value!");
-                                    flag = true;
-                                }
-                            }
-                            emitter.onNext(i);
-                            Log.d(TAG, "emit " + i + " , requested = " + emitter.requested());
-                        }
+        Flowable.create((FlowableOnSubscribe<Integer>) emitter -> {
+            Log.d(TAG, "First requested = " + emitter.requested());
+            boolean flag;
+            for (int i = 0; ; i++) {
+                flag = false;
+                while (emitter.requested() == 0) {
+                    if (!flag) {
+                        Log.d(TAG, "Oh no! I can't emit value!");
+                        flag = true;
                     }
-                }, BackpressureStrategy.ERROR)
+                }
+                emitter.onNext(i);
+                Log.d(TAG, "emit " + i + " , requested = " + emitter.requested());
+            }
+        }, BackpressureStrategy.ERROR)
                 .subscribeOn(Schedulers.io())
                 .observeOn(AndroidSchedulers.mainThread())
                 .subscribe(new Subscriber<Integer>() {
@@ -177,11 +173,10 @@ public class MainActivity extends AppCompatActivity {
                     @Override
                     public void onSubscribe(final Subscription s) {
                         Log.d(TAG, "onSubscribe");
-                        text.postDelayed(new Runnable() {
-                            @Override
-                            public void run() {
-                                s.request(97);//在 96时，上游可以继续发送emit 128-223 其他数据不能继续发送
-                            }
+                        text.postDelayed(() -> {
+                            //在处理完96个事件后，上游可以继续发送emit 128-223 共96个
+                            //95s时，上游不发送事件
+                            s.request(95);
                         }, 1000);
                     }
 
@@ -203,16 +198,14 @@ public class MainActivity extends AppCompatActivity {
     }
 
     /**
-     * 当上下游工作在不同的线程里时，每一个线程里都有一个requested，而我们调用request（1000）时，实际上改变的是下游主线程中的requested，
-     * 而上游中的requested的值是由RxJava内部调用request(n)去设置的，这个调用会在合适的时候自动触发。
+     * 当上下游工作在不同的线程里时，每一个线程里都有一个requested，
+     * 而我们调用request（1000）时，实际上改变的是下游主线程中的requested，
+     * 而上游中的requested的值是由RxJava内部调用request(n)去设置的，这个调用会在合适的时候自动触发
      */
     private void test31() {
         Flowable
-                .create(new FlowableOnSubscribe<Integer>() {
-                    @Override
-                    public void subscribe(FlowableEmitter<Integer> emitter) throws Exception {
-                        Log.d(TAG, "current requested: " + emitter.requested());//还是128
-                    }
+                .create((FlowableOnSubscribe<Integer>) emitter -> {
+                    Log.d(TAG, "current requested: " + emitter.requested());//还是128
                 }, BackpressureStrategy.ERROR)
                 .subscribeOn(Schedulers.io())
                 .observeOn(AndroidSchedulers.mainThread())
@@ -221,7 +214,7 @@ public class MainActivity extends AppCompatActivity {
                     @Override
                     public void onSubscribe(Subscription s) {
                         Log.d(TAG, "onSubscribe");
-                        s.request(1000); //我要打1000个！！
+                        s.request(1000);
                     }
 
                     @Override
@@ -248,82 +241,78 @@ public class MainActivity extends AppCompatActivity {
      * 而上游每发送一个事件之后便会去减少这个值，当这个值减少至0的时候，继续发送事件便会抛异常了
      */
     private void test30() {
-        Flowable.create(new FlowableOnSubscribe<Integer>() {
-            @Override
-            public void subscribe(FlowableEmitter<Integer> e) throws Exception {
-                Log.e(TAG, "current request=" + e.requested());
-                Log.e(TAG, "emitter 1");
-                e.onNext(1);
-                Log.e(TAG, "current request=" + e.requested());
+        Flowable.create((FlowableOnSubscribe<Integer>) e -> {
+            Log.e(TAG, "current request=" + e.requested());
+            Log.e(TAG, "emitter 1");
+            e.onNext(1);
+            Log.e(TAG, "current request=" + e.requested());
 
-                Log.e(TAG, "emitter 2");
-                e.onNext(2);
-                Log.e(TAG, "current request=" + e.requested());
+            Log.e(TAG, "emitter 2");
+            e.onNext(2);
+            Log.e(TAG, "current request=" + e.requested());
 
-                Log.e(TAG, "emitter 3");
-                e.onNext(3);
-                Log.e(TAG, "current request=" + e.requested());
+            Log.e(TAG, "emitter 3");
+            e.onNext(3);
+            Log.e(TAG, "current request=" + e.requested());
 
-                e.onComplete();
-            }
-        }, BackpressureStrategy.ERROR).subscribe(new Subscriber<Integer>() {
+            e.onComplete();
+        }, BackpressureStrategy.ERROR)
+                .subscribe(new Subscriber<Integer>() {
 
-            @Override
-            public void onSubscribe(Subscription s) {
-                Log.e(TAG, "onSubscribe");
-                s.request(10);
-            }
+                    @Override
+                    public void onSubscribe(Subscription s) {
+                        Log.e(TAG, "onSubscribe");
+                        s.request(10);
+                    }
 
-            @Override
-            public void onNext(Integer integer) {
-                Log.d(TAG, "onNext: " + integer);
-            }
+                    @Override
+                    public void onNext(Integer integer) {
+                        Log.d(TAG, "onNext: " + integer);
+                    }
 
-            @Override
-            public void onError(Throwable t) {
-                Log.e(TAG, "onError: ", t);
-            }
+                    @Override
+                    public void onError(Throwable t) {
+                        Log.e(TAG, "onError: ", t);
+                    }
 
-            @Override
-            public void onComplete() {
-                Log.e(TAG, "onComplete");
-            }
-        });
+                    @Override
+                    public void onComplete() {
+                        Log.e(TAG, "onComplete");
+                    }
+                });
     }
 
     /**
      * 在上游中打印出当前的request数量，下游什么也不做,current request=0
      */
     private void test29() {
-        Flowable.create(new FlowableOnSubscribe<Integer>() {
-            @Override
-            public void subscribe(FlowableEmitter<Integer> e) throws Exception {
-                Log.e(TAG, "current request=" + e.requested());
-            }
-        }, BackpressureStrategy.ERROR).subscribe(new Subscriber<Integer>() {
+        Flowable.create((FlowableOnSubscribe<Integer>) e ->
+                        Log.e(TAG, "current request=" + e.requested()),
+                BackpressureStrategy.ERROR)
+                .subscribe(new Subscriber<Integer>() {
 
-            @Override
-            public void onSubscribe(Subscription s) {
-                Log.e(TAG, "onSubscribe");
-                s.request(10);
-                s.request(100);// current request 110;
-            }
+                    @Override
+                    public void onSubscribe(Subscription s) {
+                        Log.e(TAG, "onSubscribe");
+                        s.request(10);
+                        s.request(100);// current request 110;
+                    }
 
-            @Override
-            public void onNext(Integer integer) {
-                Log.d(TAG, "onNext: " + integer);
-            }
+                    @Override
+                    public void onNext(Integer integer) {
+                        Log.d(TAG, "onNext: " + integer);
+                    }
 
-            @Override
-            public void onError(Throwable t) {
-                Log.e(TAG, "onError: ", t);
-            }
+                    @Override
+                    public void onError(Throwable t) {
+                        Log.e(TAG, "onError: ", t);
+                    }
 
-            @Override
-            public void onComplete() {
-                Log.e(TAG, "onComplete");
-            }
-        });
+                    @Override
+                    public void onComplete() {
+                        Log.e(TAG, "onComplete");
+                    }
+                });
     }
 
     /**
@@ -372,14 +361,13 @@ public class MainActivity extends AppCompatActivity {
      * Latest 获取到最后最新的事件
      */
     private void test27() {
-        Flowable.create(new FlowableOnSubscribe<Integer>() {
-            @Override
-            public void subscribe(FlowableEmitter<Integer> e) throws Exception {
-                for (int i = 0; ; i++) {
-                    e.onNext(i);
-                }
+        Flowable.create((FlowableOnSubscribe<Integer>) e -> {
+            for (int i = 0; ; i++) {
+                e.onNext(i);
             }
-        }, BackpressureStrategy.LATEST).subscribeOn(Schedulers.io()).observeOn(AndroidSchedulers.mainThread())
+        }, BackpressureStrategy.LATEST)
+                .subscribeOn(Schedulers.io())
+                .observeOn(AndroidSchedulers.mainThread())
                 .subscribe(new Subscriber<Integer>() {
                     Subscription mSubscription;
                     Runnable runnable = new Runnable() {
@@ -425,14 +413,13 @@ public class MainActivity extends AppCompatActivity {
      * 当我们request(128)的时候,下游便会处理掉这128个事件, 那么上游水缸中又会重新装进新的128个事件, 以此类推
      */
     private void test26() {
-        Flowable.create(new FlowableOnSubscribe<Integer>() {
-            @Override
-            public void subscribe(FlowableEmitter<Integer> e) throws Exception {
-                for (int i = 0; ; i++) {
-                    e.onNext(i);
-                }
+        Flowable.create((FlowableOnSubscribe<Integer>) e -> {
+            for (int i = 0; ; i++) {
+                e.onNext(i);
             }
-        }, BackpressureStrategy.DROP).subscribeOn(Schedulers.io()).observeOn(AndroidSchedulers.mainThread())
+        }, BackpressureStrategy.DROP)
+                .subscribeOn(Schedulers.io())
+                .observeOn(AndroidSchedulers.mainThread())
                 .subscribe(new Subscriber<Integer>() {
                     Subscription mSubscription;
                     Runnable runnable = new Runnable() {
@@ -513,15 +500,14 @@ public class MainActivity extends AppCompatActivity {
      * BackpressureStrategy.BUFFER
      */
     private void test24() {
-        Flowable.create(new FlowableOnSubscribe<Integer>() {
-            @Override
-            public void subscribe(FlowableEmitter<Integer> e) throws Exception {
-                for (int i = 0; i < 1000; i++) {
-                    Log.d(TAG, "emit " + i);
-                    e.onNext(i);
-                }
+        Flowable.create((FlowableOnSubscribe<Integer>) e -> {
+            for (int i = 0; i < 1000; i++) {
+                Log.d(TAG, "emit " + i);
+                e.onNext(i);
             }
-        }, BackpressureStrategy.BUFFER).subscribeOn(Schedulers.io()).observeOn(AndroidSchedulers.mainThread())
+        }, BackpressureStrategy.BUFFER)
+                .subscribeOn(Schedulers.io())
+                .observeOn(AndroidSchedulers.mainThread())
                 .subscribe(new Subscriber<Integer>() {
                     @Override
                     public void onSubscribe(Subscription s) {
@@ -549,15 +535,14 @@ public class MainActivity extends AppCompatActivity {
      * 缓存大小128，超过128报错 onError: io.reactivex.exceptions.MissingBackpressureException: create: could not emit value due to lack of requests
      */
     private void test23() {
-        Flowable.create(new FlowableOnSubscribe<Integer>() {
-            @Override
-            public void subscribe(FlowableEmitter<Integer> e) throws Exception {
-                for (int i = 0; i < 129; i++) {
-                    Log.d(TAG, "emit " + i);
-                    e.onNext(i);
-                }
+        Flowable.create((FlowableOnSubscribe<Integer>) e -> {
+            for (int i = 0; i < 129; i++) {
+                Log.d(TAG, "emit " + i);
+                e.onNext(i);
             }
-        }, BackpressureStrategy.ERROR).subscribeOn(Schedulers.io()).observeOn(AndroidSchedulers.mainThread())
+        }, BackpressureStrategy.ERROR)
+                .subscribeOn(Schedulers.io())
+                .observeOn(AndroidSchedulers.mainThread())
                 .subscribe(new Subscriber<Integer>() {
                     @Override
                     public void onSubscribe(Subscription s) {
@@ -630,23 +615,22 @@ public class MainActivity extends AppCompatActivity {
 
     /**
      * 不同线程
-     * 因为在Flowable里默认有一个大小为128的水缸, 当上下游工作在不同的线程中时, 上游就会先把事件发送到这个水缸中,
-     * 因此, 下游虽然没有调用request, 但是上游在水缸中保存着这些事件, 只有当下游调用request时, 才从水缸里取出事件发给下游.
+     * 因为在Flowable里默认有一个大小为128的水缸, 当上下游工作在不同的线程中时,
+     * 上游就会先把事件发送到这个水缸中,因此, 下游虽然没有调用request,
+     * 但是上游在水缸中保存着这些事件, 只有当下游调用request时, 才从水缸里取出事件发给下游.
      */
     private void test21() {
-        Flowable.create(new FlowableOnSubscribe<Integer>() {
-            @Override
-            public void subscribe(FlowableEmitter<Integer> e) throws Exception {
-                Log.e(TAG, "Emitter 1");
-                e.onNext(1);
-                Log.e(TAG, "Emitter 2");
-                e.onNext(2);
-                Log.e(TAG, "Emitter 3");
-                e.onNext(3);
-                Log.e(TAG, "Emitter onComplete");
-                e.onComplete();
-            }
-        }, BackpressureStrategy.ERROR).subscribeOn(Schedulers.io())
+        Flowable.create((FlowableOnSubscribe<Integer>) e -> {
+            Log.e(TAG, "Emitter 1");
+            e.onNext(1);
+            Log.e(TAG, "Emitter 2");
+            e.onNext(2);
+            Log.e(TAG, "Emitter 3");
+            e.onNext(3);
+            Log.e(TAG, "Emitter onComplete");
+            e.onComplete();
+        }, BackpressureStrategy.ERROR)
+                .subscribeOn(Schedulers.io())
                 .observeOn(AndroidSchedulers.mainThread())
                 .subscribe(new Subscriber<Integer>() {
                     @Override
@@ -672,117 +656,80 @@ public class MainActivity extends AppCompatActivity {
     }
 
     /**
-     * 因为下游没有调用request, 上游就认为下游没有处理事件的能力, 而这又是一个同步的订阅, 既然下游处理不了, 那上游不可能一直等待吧,
+     * 因为下游没有调用request, 上游就认为下游没有处理事件的能力,
+     * 而这又是一个同步的订阅, 既然下游处理不了, 那上游不可能一直等待吧,
      * 如果是这样, 万一这两根水管工作在主线程里, 界面不就卡死了吗, 因此只能抛个异常来提醒我们.
      * 那如何解决这种情况呢, 很简单啦, 下游直接调用request(Long.MAX_VALUE)就行了,
      * 或者根据上游发送事件的数量来request就行了, 比如这里request(3)就可以了
      */
     private void test20() {
-        Flowable<Integer> upStream = Flowable.create(new FlowableOnSubscribe<Integer>() {
-            @Override
-            public void subscribe(FlowableEmitter<Integer> e) throws Exception {
-                Log.e(TAG, "Emitter 1");
-                e.onNext(1);
-                Log.e(TAG, "Emitter 2");
-                e.onNext(2);
-                Log.e(TAG, "Emitter 3");
-                e.onNext(3);
-                Log.e(TAG, "Emitter onComplete");
-                e.onComplete();
-            }
-        }, BackpressureStrategy.ERROR);
+        Flowable.create((FlowableOnSubscribe<Integer>) emitter -> {
+            emitter.onNext(1);
+            emitter.onNext(2);
+            emitter.onNext(3);
+            emitter.onComplete();
+        }, BackpressureStrategy.ERROR)
+                .subscribe(new Subscriber<Integer>() {
+                    @Override
+                    public void onSubscribe(Subscription s) {
+                        Log.d(TAG, "onSubscribe ");
+//                        s.request(3);
+                    }
 
-        Subscriber<Integer> downStream = new Subscriber<Integer>() {
-            @Override
-            public void onSubscribe(Subscription s) {
-                Log.e(TAG, "onSubscribe");
-//                s.request(Long.MAX_VALUE);//没有 request 时 ，onError=create: could not emit value due to lack of requests
-            }
+                    @Override
+                    public void onNext(Integer integer) {
+                        Log.d(TAG, "onNext " + integer);
+                    }
 
-            @Override
-            public void onNext(Integer integer) {
-                Log.e(TAG, "onNext=" + integer);
-            }
+                    @Override
+                    public void onError(Throwable t) {
+                        Log.d(TAG, t.getMessage());
+                    }
 
-            @Override
-            public void onError(Throwable t) {
-                Log.e(TAG, "onError=" + t.getMessage());
-            }
-
-            @Override
-            public void onComplete() {
-                Log.e(TAG, "onComplete");
-            }
-        };
-        upStream.subscribe(downStream);
+                    @Override
+                    public void onComplete() {
+                        Log.e(TAG, "onComplete");
+                    }
+                });
     }
 
     private void test19() {
-        Observable.create(new ObservableOnSubscribe<Integer>() {
-            @Override
-            public void subscribe(ObservableEmitter<Integer> emitter) throws Exception {
-                for (int i = 0; ; i++) {
-                    emitter.onNext(i);
-                    Thread.sleep(2000);  //每次发送完事件延时2秒
-                }
+        Observable.create((ObservableOnSubscribe<Integer>) emitter -> {
+            for (int i = 0; ; i++) {
+                emitter.onNext(i);
+                Thread.sleep(2000);  //每次发送完事件延时2秒
             }
         }).subscribeOn(Schedulers.io())
                 .observeOn(AndroidSchedulers.mainThread())
-                .subscribe(new Consumer<Integer>() {
-                    @Override
-                    public void accept(Integer integer) throws Exception {
-                        Log.d(TAG, "" + integer);
-                    }
-                });
+                .subscribe(integer -> Log.d(TAG, "" + integer));
     }
 
     /**
      * 2秒采样
      */
     private void test18() {
-        Observable.create(new ObservableOnSubscribe<Integer>() {
-            @Override
-            public void subscribe(ObservableEmitter<Integer> e) throws Exception {
-                for (int i = 0; ; i++) {
-                    e.onNext(i);
-
-                }
+        Observable.create((ObservableOnSubscribe<Integer>) e -> {
+            for (int i = 0; ; i++) {
+                e.onNext(i);
             }
         }).subscribeOn(Schedulers.io())
                 .sample(2, TimeUnit.SECONDS)
                 .observeOn(AndroidSchedulers.mainThread())
-                .subscribe(new Consumer<Integer>() {
-                    @Override
-                    public void accept(Integer integer) throws Exception {
-                        Log.d(TAG, "" + integer);
-                    }
-                });
+                .subscribe(integer -> Log.d(TAG, "" + integer));
     }
 
     /**
      * 过滤
      */
     private void test17() {
-        Observable.create(new ObservableOnSubscribe<Integer>() {
-            @Override
-            public void subscribe(ObservableEmitter<Integer> e) throws Exception {
-                for (int i = 0; ; i++) {
-                    e.onNext(i);
-                }
+        Observable.create((ObservableOnSubscribe<Integer>) e -> {
+            for (int i = 0; ; i++) {
+                e.onNext(i);
             }
         }).subscribeOn(Schedulers.io())
-                .filter(new Predicate<Integer>() {
-                    @Override
-                    public boolean test(Integer integer) throws Exception {
-                        return integer % 100 == 0;
-                    }
-                }).observeOn(AndroidSchedulers.mainThread())
-                .subscribe(new Consumer<Integer>() {
-                    @Override
-                    public void accept(Integer integer) throws Exception {
-                        Log.d(TAG, "" + integer);
-                    }
-                });
+                .filter(integer -> integer % 100 == 0)
+                .observeOn(AndroidSchedulers.mainThread())
+                .subscribe(integer -> Log.d(TAG, String.valueOf(integer)));
     }
 
     private void test16() {
@@ -804,108 +751,65 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void test15() {
-        Observable<Integer> observable1 = Observable.create(new ObservableOnSubscribe<Integer>() {
-            @Override
-            public void subscribe(ObservableEmitter<Integer> emitter) throws Exception {
-                for (int i = 0; ; i++) {   //无限循环发事件
-                    emitter.onNext(i);
-                }
+        Observable<Integer> observable1 = Observable.create((ObservableOnSubscribe<Integer>) emitter -> {
+            for (int i = 0; ; i++) {   //无限循环发事件
+                emitter.onNext(i);
             }
         }).subscribeOn(Schedulers.io());
 
-        Observable<String> observable2 = Observable.create(new ObservableOnSubscribe<String>() {
-            @Override
-            public void subscribe(ObservableEmitter<String> emitter) throws Exception {
-                emitter.onNext("A");
-            }
-        }).subscribeOn(Schedulers.io());
+        Observable<String> observable2 = Observable.create((ObservableOnSubscribe<String>)
+                emitter -> emitter.onNext("A")).subscribeOn(Schedulers.io());
 
-        Observable.zip(observable1, observable2, new BiFunction<Integer, String, String>() {
-            @Override
-            public String apply(Integer integer, String s) throws Exception {
-                return integer + s;
-            }
-        }).observeOn(AndroidSchedulers.mainThread()).subscribe(new Consumer<String>() {
-            @Override
-            public void accept(String s) throws Exception {
-                Log.d(TAG, s);
-            }
-        }, new Consumer<Throwable>() {
-            @Override
-            public void accept(Throwable throwable) throws Exception {
-                Log.w(TAG, throwable);
-            }
-        });
+        Observable.zip(observable1, observable2,
+                (integer, s) -> integer + s)
+                .observeOn(AndroidSchedulers.mainThread())
+                .subscribe(s -> Log.d(TAG, s), throwable -> Log.w(TAG, throwable));
     }
 
     /**
      * 不在同一个线程
      */
     private void test14() {
-        Observable<Integer> observable1 = Observable.create(new ObservableOnSubscribe<Integer>() {
-            @Override
-            public void subscribe(ObservableEmitter<Integer> e) throws Exception {
-                Log.e(TAG, "observable1");
-                e.onNext(1);
-                Log.e(TAG, "observable1 1");
-                Thread.sleep(1000);
-                e.onNext(2);
-                Log.e(TAG, "observable1 2");
-                Thread.sleep(1000);
-                e.onNext(3);
-                Log.e(TAG, "observable1 3");
-                Thread.sleep(1000);
-                e.onComplete();
-                Log.e(TAG, "observable1 onComplete");
-            }
+        Observable<Integer> observable1 = Observable.create((ObservableOnSubscribe<Integer>) emitter -> {
+            Log.d(TAG, "emit 1");
+            emitter.onNext(1);
+            Thread.sleep(1000);
+
+            Log.d(TAG, "emit 2");
+            emitter.onNext(2);
+            Thread.sleep(1000);
+
+            Log.d(TAG, "emit 3");
+            emitter.onNext(3);
+
+            Log.d(TAG, "emit 4");
+            emitter.onNext(4);
+
+            Log.d(TAG, "emit complete1");
+            emitter.onComplete();
         }).subscribeOn(Schedulers.io());
-        Observable<String> observable2 = Observable.create(new ObservableOnSubscribe<String>() {
-            @Override
-            public void subscribe(ObservableEmitter<String> e) throws Exception {
-                Log.e(TAG, "observable2");
-                e.onNext("A");
-                Log.e(TAG, "observable2 A");
-                Thread.sleep(1000);
-                e.onNext("B");
-                Log.e(TAG, "observable2 B");
-                Thread.sleep(1000);
-                e.onNext("C");
-                Log.e(TAG, "observable2 C");
-                Thread.sleep(1000);
-                e.onNext("D");
-                Log.e(TAG, "observable2 D");
-//                Thread.sleep(1000); // InterruptedException
-                e.onComplete();
-                Log.e(TAG, "observable2 onComplete");
-            }
+        Observable<String> observable2 = Observable.create((ObservableOnSubscribe<String>) emitter -> {
+            Log.d(TAG, "emit A");
+            emitter.onNext("A");
+            Thread.sleep(1000);
+
+            Log.d(TAG, "emit B");
+            emitter.onNext("B");
+            Thread.sleep(1000);
+
+            Log.d(TAG, "emit C");
+            emitter.onNext("C");
+            Thread.sleep(1000);
+
+            Log.d(TAG, "emit complete2");
+            emitter.onComplete();
         }).subscribeOn(Schedulers.io());
 
-        Observable.zip(observable1, observable2, new BiFunction<Integer, String, String>() {
-            @Override
-            public String apply(Integer integer, String s) throws Exception {
-                return integer + s;
-            }
-        }).subscribe(new Observer<String>() {
-            @Override
-            public void onSubscribe(Disposable d) {
-                Log.e(TAG, "onSubscribe");
-            }
-
-            @Override
-            public void onNext(String value) {
-                Log.e(TAG, "onNext=" + value);
-            }
-
-            @Override
-            public void onError(Throwable e) {
-                Log.e(TAG, "onError");
-            }
-
-            @Override
-            public void onComplete() {
-                Log.e(TAG, "onComplete");
-            }
-        });
+        Observable.zip(observable1, observable2,
+                (integer, string) -> integer + string)
+                .subscribe(string -> Log.e(TAG, string),
+                        throwable -> Log.e(TAG, throwable.getMessage()),
+                        () -> Log.e(TAG, "onComplete"));
     }
 
     /**
@@ -917,56 +821,31 @@ public class MainActivity extends AppCompatActivity {
      * 先发送的水管一再发送的水管二呢, 为什么会有这种情况呢? 因为我们两根水管都是运行在同一个线程里, 同一个线程里执行代码肯定有先后顺序呀
      */
     private void test13() {
-        Observable<Integer> observable1 = Observable.create(new ObservableOnSubscribe<Integer>() {
-            @Override
-            public void subscribe(ObservableEmitter<Integer> e) throws Exception {
-                Log.e(TAG, "observable1");
-                e.onNext(1);
-                e.onNext(2);
-                e.onNext(3);
-                e.onComplete();
-                Log.e(TAG, "observable1 onComplete");
-            }
+        Observable<Integer> o1 = Observable.create(emitter -> {
+            emitter.onNext(1);
+            Log.e(TAG, "onNext 1");
+            emitter.onNext(2);
+            Log.e(TAG, "onNext 2");
+            emitter.onNext(3);
+            Log.e(TAG, "onNext 3");
+            emitter.onNext(4);
+            Log.e(TAG, "onNext 4");
+            emitter.onComplete();
         });
-        Observable<String> observable2 = Observable.create(new ObservableOnSubscribe<String>() {
-            @Override
-            public void subscribe(ObservableEmitter<String> e) throws Exception {
-                Log.e(TAG, "observable2");
-                e.onNext("1");
-                e.onNext("2");
-                e.onNext("3");
-                e.onNext("4");
-                e.onComplete();
-                Log.e(TAG, "observable2 onComplete");
-            }
+        Observable<String> o2 = Observable.create(emitter -> {
+            emitter.onNext("A");
+            Log.e(TAG, "onNext A");
+            emitter.onNext("B");
+            Log.e(TAG, "onNext B");
+            emitter.onNext("C");
+            Log.e(TAG, "onNext C");
+            emitter.onComplete();
         });
-
-        Observable.zip(observable1, observable2, new BiFunction<Integer, String, String>() {
-            @Override
-            public String apply(Integer integer, String s) throws Exception {
-                return integer + s;
-            }
-        }).subscribe(new Observer<String>() {
-            @Override
-            public void onSubscribe(Disposable d) {
-                Log.e(TAG, "onSubscribe");
-            }
-
-            @Override
-            public void onNext(String value) {
-                Log.e(TAG, "value=" + value);
-            }
-
-            @Override
-            public void onError(Throwable e) {
-
-            }
-
-            @Override
-            public void onComplete() {
-                Log.e(TAG, "onComplete");
-            }
-        });
+        Observable.zip(o1, o2,
+                (integer, string) -> integer + string)
+                .subscribe(string -> Log.e(TAG, string),
+                        throwable -> Log.e(TAG, throwable.getMessage()),
+                        () -> Log.e(TAG, "onComplete"));
     }
 
     private void test12() {
@@ -975,95 +854,78 @@ public class MainActivity extends AppCompatActivity {
 
 
     /**
-     * FlatMap将一个发送事件的上游Observable变换为多个发送事件的Observables，然后将它们发射的事件合并后放进一个单独的Observable里.
-     * flatMap并不保证事件的顺序 如果需要保证顺序则需要使用concatMap
+     * FlatMap将一个发送事件的上游Observable变换为多个发送事件的Observables，
+     * 然后将它们发送的事件合并成一个单独的Observable.flatMap并不保证事件的顺序，
+     * 如果需要保证顺序则需要使用concatMap
      */
     private void test11() {
-        Observable.create(new ObservableOnSubscribe<Integer>() {
-            @Override
-            public void subscribe(ObservableEmitter<Integer> e) throws Exception {
-                e.onNext(1);
-                e.onNext(2);
-                e.onNext(3);
+        Observable.create((ObservableOnSubscribe<Integer>) emitter -> {
+            emitter.onNext(1);
+            emitter.onNext(2);
+            emitter.onNext(3);
+            emitter.onComplete();
+        }).flatMap(integer -> {
+            List<String> list = new ArrayList<>();
+            for (int i = 0; i < 3; i++) {
+                list.add("I am value " + integer);
             }
-        }).concatMap(new Function<Integer, ObservableSource<String>>() {
-            //        }).flatMap(new Function<Integer, ObservableSource<String>>() {
-            @Override
-            public ObservableSource<String> apply(Integer integer) throws Exception {
-                final List<String> list = new ArrayList<String>();
-                for (int i = 0; i < 2; i++) {
-                    list.add("value=" + integer);
-                }
-                return Observable.fromIterable(list).delay(10, TimeUnit.MILLISECONDS);//为了看到flatMap结果是无序的,所以加了10毫秒的延时
-            }
-        }).subscribe(new Consumer<String>() {
-            @Override
-            public void accept(String s) throws Exception {
-                Log.e(TAG, s);
-            }
-        });
+            return Observable.fromIterable(list);
+        }).subscribe(string -> Log.e(TAG, string),
+                throwable -> Log.e(TAG, throwable.getMessage()),
+                () -> Log.e(TAG, "onComplete"));
     }
 
     /**
      * map操作符 通过Map, 可以将上游发来的事件转换为任意的类型, 可以是一个Object, 也可以是一个集合
      */
     private void test10() {
-        Observable.create(new ObservableOnSubscribe<Integer>() {
-            @Override
-            public void subscribe(ObservableEmitter<Integer> e) throws Exception {
-                e.onNext(1);
-                e.onNext(2);
-                e.onNext(3);
+        Observable.just("Hellow", "Wrold").subscribe(string -> Log.e(TAG, string));
+
+        Observable.create((ObservableOnSubscribe<Integer>) e -> {
+            e.onNext(1);
+            e.onNext(2);
+            e.onNext(3);
+            e.onComplete();
+        }).map(integer -> {
+            List<String> list = new ArrayList<>();
+            for (int i = 0; i < 3; i++) {
+                list.add("I am value " + integer);
             }
-        }).map(new Function<Integer, String>() {
-            @Override
-            public String apply(Integer integer) throws Exception {
-                return "result>" + integer;
-            }
-        }).subscribe(new Consumer<String>() {
-            @Override
-            public void accept(String s) throws Exception {
-                Log.e(TAG, s);
-            }
-        });
+            return list;
+        })
+                .subscribe(stringList -> Log.e(TAG, "map " + stringList),
+                        throwable -> Log.e(TAG, throwable.getMessage()),
+                        () -> Log.e(TAG, "onComplete"));
     }
 
     /**
      * 数据库
      */
     private void test9() {
-        Observable.create(new ObservableOnSubscribe<List<String>>() {
-            @Override
-            public void subscribe(ObservableEmitter<List<String>> e) throws Exception {
-//                Cursor cursor = null;
-//                try {
-//                    cursor = getReadableDatabase().rawQuery("select * from " + TABLE_NAME, new String[]{});
-//                    List<Record> result = new ArrayList<>();
-//                    while (cursor.moveToNext()) {
-//                        result.add(Db.Record.read(cursor));
-//                    }
-//                    emitter.onNext(result);
-//                    emitter.onComplete();
-//                } finally {
-//                    if (cursor != null) {
-//                        cursor.close();
-//                    }
+        Observable.create((ObservableOnSubscribe<List<String>>) e -> {
+//            Cursor cursor = null;
+//            try {
+//                cursor = getReadableDatabase().rawQuery("select * from " + TABLE_NAME, new String[]{});
+//                List<Record> result = new ArrayList<>();
+//                while (cursor.moveToNext()) {
+//                    result.add(Db.Record.read(cursor));
 //                }
-                List<String> result = new ArrayList<>();
-                result.add("1");
-                result.add("2");
-                result.add("3");
-                e.onNext(result);
-                e.onComplete();
-            }
+//                emitter.onNext(result);
+//                emitter.onComplete();
+//            } finally {
+//                if (cursor != null) {
+//                    cursor.close();
+//                }
+//            }
+            List<String> result = new ArrayList<>();
+            result.add("1");
+            result.add("2");
+            result.add("3");
+            e.onNext(result);
+            e.onComplete();
         }).subscribeOn(Schedulers.io())
                 .observeOn(AndroidSchedulers.mainThread())
-                .subscribe(new Consumer<List<String>>() {
-                    @Override
-                    public void accept(List<String> strings) throws Exception {
-                        Log.e(TAG, strings.toString());
-                    }
-                });
+                .subscribe(strings -> Log.e(TAG, strings.toString()));
     }
 
     /**
@@ -1082,39 +944,23 @@ public class MainActivity extends AppCompatActivity {
      * AndroidSchedulers.mainThread()代表Android的主线程
      */
     private void test7() {
-        Observable<Integer> observable = Observable.create(new ObservableOnSubscribe<Integer>() {
-            @Override
-            public void subscribe(ObservableEmitter<Integer> e) throws Exception {
-                Log.e(TAG, "Observable thread name=" + Thread.currentThread().getName());
-                e.onNext(1);
-            }
-        });
-
-        Consumer<Integer> consumer = new Consumer<Integer>() {
-            @Override
-            public void accept(Integer integer) throws Exception {
-                Log.e(TAG, "Consumer thread name=" + Thread.currentThread().getName());
-                Log.e(TAG, "Consumer accept=" + integer);
-            }
-        };
-
-        observable.subscribeOn(Schedulers.newThread())
-                .subscribeOn(Schedulers.io())
+        Observable.create(emitter -> {
+            emitter.onNext(1);
+            emitter.onNext(2);
+            Log.e(TAG, "emitter =" + Thread.currentThread().getName());
+        }).subscribeOn(Schedulers.io())
+                .subscribeOn(Schedulers.newThread())
                 .observeOn(AndroidSchedulers.mainThread())
-                .doOnNext(new Consumer<Integer>() {
-                    @Override
-                    public void accept(Integer integer) throws Exception {
-                        Log.e(TAG, "After observeOn(mainThread), current thread is: " + Thread.currentThread().getName());
-                    }
+                .doOnNext(object -> {
+                    Log.e(TAG, "observeOn mainThread=" + Thread.currentThread().getName());
                 })
                 .observeOn(Schedulers.io())
-                .doOnNext(new Consumer<Integer>() {
-                    @Override
-                    public void accept(Integer integer) throws Exception {
-                        Log.e(TAG, "After observeOn(io), current thread is: " + Thread.currentThread().getName());
-                    }
-                })
-                .subscribe(consumer);
+                .doOnNext(object -> {
+                    Log.e(TAG, "observeOn io=" + Thread.currentThread().getName());
+                }).subscribe(object -> {
+            Log.e(TAG, "subscribe=" + Thread.currentThread().getName());
+            Log.e(TAG, "subscribe=" + object);
+        });
     }
 
     /**
@@ -1125,25 +971,22 @@ public class MainActivity extends AppCompatActivity {
      * 多次指定下游的线程是可以的, 也就是说每调用一次observeOn() , 下游的线程就会切换一次.
      */
     private void test6() {
-        Observable<Integer> observable = Observable.create(new ObservableOnSubscribe<Integer>() {
-            @Override
-            public void subscribe(ObservableEmitter<Integer> e) throws Exception {
-                Log.e(TAG, "Observable thread name=" + Thread.currentThread().getName());
-                e.onNext(1);
-            }
-        });
-
-        Consumer<Integer> consumer = new Consumer<Integer>() {
-            @Override
-            public void accept(Integer integer) throws Exception {
-                Log.e(TAG, "Consumer thread name=" + Thread.currentThread().getName());
-                Log.e(TAG, "Consumer accept=" + integer);
-            }
-        };
-
-        observable.subscribeOn(Schedulers.newThread())//指定上游事件线程RxNewThreadScheduler-1
-                .observeOn(AndroidSchedulers.mainThread())//指定下游事件线程main
-                .subscribe(consumer);
+        Observable.create(emitter -> {
+            Log.e(TAG, Thread.currentThread().getName());
+            emitter.onNext(1);
+            emitter.onNext("2");
+            emitter.onNext(3);
+            emitter.onComplete();
+        }).subscribeOn(Schedulers.io())//指定上游线程，调用多次，只有第一次设置有效
+                .observeOn(AndroidSchedulers.mainThread())//多次调用下游线程，每次都会切换
+                .subscribe(object -> {
+                    Log.e(TAG, Thread.currentThread().getName());
+                    Log.e(TAG, String.valueOf(object));
+                }, throwable -> {
+                    Log.e(TAG, throwable.getMessage());
+                }, () -> {
+                    Log.e(TAG, "onComplete");
+                });
     }
 
     /**
@@ -1252,27 +1095,27 @@ public class MainActivity extends AppCompatActivity {
 
     // 注意: 调用dispose()并不会导致上游不再继续发送事件, 上游会继续发送剩余的事件.
     private void test2() {
-        Observable.create(new ObservableOnSubscribe<Integer>() {
-            @Override
-            public void subscribe(ObservableEmitter<Integer> e) throws Exception {
-                e.onNext(1);
-                e.onNext(2);
-                e.onNext(3);
-//                e.onComplete();
-//                e.onError(new NullPointerException("NPE"));//在onComplete()之后，可以继续发送onError(),会抛出异常RxJava不作处理
-
-                e.onError(new NullPointerException("NPE"));//在onComplete()之前，发送onError(),RxJava会处理，捕获异常
-                e.onComplete();
-            }
+        Observable.create((ObservableOnSubscribe<Integer>) emitter -> {
+            emitter.onNext(1);
+            emitter.onNext(2);
+            emitter.onComplete();
+            emitter.onNext(3);
         }).subscribe(new Observer<Integer>() {
+            Disposable mD;
+
             @Override
             public void onSubscribe(Disposable d) {
-                Log.e(TAG, "onSubscribe");
+                mD = d;
+                Log.e(TAG, "onSubscribe " + d);
             }
 
             @Override
-            public void onNext(Integer value) {
-                Log.e(TAG, "onNext=" + value);
+            public void onNext(Integer integer) {
+                Log.e(TAG, "onNext=" + integer);
+                if (integer == 2) {
+                    mD.dispose();
+                    Log.e(TAG, "mD=" + mD.isDisposed());
+                }
             }
 
             @Override
@@ -1288,29 +1131,26 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void test1() {
-        Observable<Integer> observable = Observable.create(new ObservableOnSubscribe<Integer>() {
-            @Override
-            public void subscribe(ObservableEmitter<Integer> e) throws Exception {
-                e.onNext(1);
-                e.onNext(2);
-                e.onNext(3);
-                e.onComplete();
-            }
+        Observable<Integer> observable = Observable.create(emitter -> {
+            emitter.onNext(1);
+            emitter.onNext(2);
+            emitter.onNext(3);
+            emitter.onComplete();
         });
         Observer<Integer> observer = new Observer<Integer>() {
             @Override
             public void onSubscribe(Disposable d) {
-                Log.e(TAG, "onSubscribe");
+
             }
 
             @Override
             public void onNext(Integer value) {
-                Log.e(TAG, "onNext=" + value);
+                Log.d(TAG, "" + value);
             }
 
             @Override
             public void onError(Throwable e) {
-                Log.e(TAG, "onError");
+
             }
 
             @Override
@@ -1319,6 +1159,26 @@ public class MainActivity extends AppCompatActivity {
             }
         };
         observable.subscribe(observer);
+
+        Observable.create(emitter -> {
+            emitter.onNext(1);
+            emitter.onNext("2");
+            emitter.onNext(3);
+            emitter.onComplete();
+//            emitter.onError(new NullPointerException("ERROR"));
+//            emitter.onError(new NullPointerException("ERROR"));
+        }).subscribe(object -> Log.d(TAG, String.valueOf(object)),
+                throwable -> Log.e(TAG, throwable.getMessage()),
+                () -> Log.e(TAG, "onComplete"));
+
+        Observable.create((ObservableOnSubscribe<Integer>) emitter -> {
+            emitter.onNext(1);
+            emitter.onNext(2);
+            emitter.onNext(3);
+            emitter.onComplete();
+        }).subscribe(integer -> Log.d(TAG, String.valueOf(integer)),
+                throwable -> Log.e(TAG, throwable.getMessage()),
+                () -> Log.e(TAG, "onComplete"));
     }
 
     @Override

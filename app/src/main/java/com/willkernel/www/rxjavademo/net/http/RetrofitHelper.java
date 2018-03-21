@@ -14,21 +14,16 @@ import com.willkernel.www.rxjavademo.net.request.RegisterRequest;
 import com.willkernel.www.rxjavademo.net.request.UserBaseInfoRequest;
 import com.willkernel.www.rxjavademo.net.request.UserExtraInfoRequest;
 import com.willkernel.www.rxjavademo.net.response.LoginResponse;
-import com.willkernel.www.rxjavademo.net.response.RegisterResponse;
 import com.willkernel.www.rxjavademo.net.response.UserBaseInfoResponse;
 import com.willkernel.www.rxjavademo.net.response.UserExtraInfoResponse;
 
 import java.util.concurrent.TimeUnit;
 
 import io.reactivex.Observable;
-import io.reactivex.ObservableSource;
 import io.reactivex.Observer;
 import io.reactivex.android.schedulers.AndroidSchedulers;
 import io.reactivex.disposables.CompositeDisposable;
 import io.reactivex.disposables.Disposable;
-import io.reactivex.functions.BiFunction;
-import io.reactivex.functions.Consumer;
-import io.reactivex.functions.Function;
 import io.reactivex.schedulers.Schedulers;
 import okhttp3.OkHttpClient;
 import okhttp3.logging.HttpLoggingInterceptor;
@@ -51,8 +46,8 @@ public final class RetrofitHelper {
     public RetrofitHelper() {
         initOkHttp();
         compositeDisposable = new CompositeDisposable();
-        loginApi = getApiService("http://a.ypt5566.com/", LoginApi.class);
-        userApi = getApiService("http://a.ypt5566.com/", UserApi.class);
+        loginApi = getApiService("http://baidu.com/", LoginApi.class);
+        userApi = getApiService("http://baidu.com/", UserApi.class);
     }
 
     private void initOkHttp() {
@@ -81,6 +76,35 @@ public final class RetrofitHelper {
 
     public void login(LoginRequest loginRequest, final Context context) {
         loginApi.login(loginRequest)
+                //在IO线程进行网络请求
+                .subscribeOn(Schedulers.io())
+                //回到主线程去处理请求结果
+                .observeOn(AndroidSchedulers.mainThread())
+                .subscribe(new Observer<LoginResponse>() {
+                    @Override
+                    public void onSubscribe(Disposable d) {
+                        //Activity退出时结束事件 CompositeDisposable.clear()
+                        compositeDisposable.add(d);
+                    }
+
+                    @Override
+                    public void onNext(LoginResponse value) {
+                        Log.e(TAG, "value=" + value);
+                    }
+
+                    @Override
+                    public void onError(Throwable e) {
+                        Log.e(TAG, "onError" + e.getMessage());
+                    }
+
+                    @Override
+                    public void onComplete() {
+                        Log.e(TAG, "onComplete");
+                        Toast.makeText(context, "onComplete", Toast.LENGTH_LONG).show();
+                    }
+                });
+
+        loginApi.login(loginRequest)
                 .subscribeOn(Schedulers.io())
                 .observeOn(AndroidSchedulers.mainThread())
                 .subscribe(new Observer<LoginResponse>() {
@@ -108,60 +132,27 @@ public final class RetrofitHelper {
     }
 
     public void register(RegisterRequest registerRequest, final Context context) {
-        loginApi.register(registerRequest)
-                .subscribeOn(Schedulers.io())
-                .observeOn(AndroidSchedulers.mainThread())
-                .doOnNext(new Consumer<RegisterResponse>() {
-                    @Override
-                    public void accept(RegisterResponse registerResponse) throws Exception {
-                        Toast.makeText(context, registerResponse.toString(), Toast.LENGTH_LONG).show();
-                    }
-                })
-                .observeOn(Schedulers.io())
-                .flatMap(new Function<RegisterResponse, ObservableSource<LoginResponse>>() {
-                    @Override
-                    public ObservableSource<LoginResponse> apply(RegisterResponse registerResponse) throws Exception {
-                        if (registerResponse.code.equals("success")) {
-                            return loginApi.login(new LoginRequest());
-                        } else {
-                            return null;
-                        }
-                    }
-                })
-                .observeOn(AndroidSchedulers.mainThread())
-                .subscribe(new Consumer<LoginResponse>() {
-                    @Override
-                    public void accept(LoginResponse loginResponse) throws Exception {
-                        Toast.makeText(context, loginResponse.toString(), Toast.LENGTH_LONG).show();
-                    }
-                }, new Consumer<Throwable>() {
-                    @Override
-                    public void accept(Throwable throwable) throws Exception {
-                        Toast.makeText(context, throwable.getMessage(), Toast.LENGTH_LONG).show();
-                    }
-                })
-        ;
+        loginApi.register(registerRequest)//发起注册请求
+                .subscribeOn(Schedulers.io())//io线程注册
+                .observeOn(AndroidSchedulers.mainThread())//注册结果在主线程
+                .doOnNext(registerResponse -> Log.e(TAG, "registerResponse"))//注册结果
+                .subscribeOn(Schedulers.io())//在io线程登陆
+                .flatMap(mapper -> loginApi.login(new LoginRequest()))//登陆
+                .observeOn(AndroidSchedulers.mainThread())//登陆后回到主线程
+                .subscribe(loginResponse -> Log.e(TAG, "login success"),
+                        throwable -> Log.e(TAG, "login failure " + throwable.getMessage()),
+                        () -> Log.e(TAG, "onComplete"));
     }
 
     public void fetchUserInfo(UserBaseInfoRequest baseInfoRequest, UserExtraInfoRequest extraInfoRequest) {
         Observable<UserBaseInfoResponse> observable1 = userApi.getUserBaseInfo(baseInfoRequest).subscribeOn(Schedulers.io());
         Observable<UserExtraInfoResponse> observable2 = userApi.getUserExtraInfo(extraInfoRequest).subscribeOn(Schedulers.io());
-        Observable.zip(observable1, observable2, new BiFunction<UserBaseInfoResponse, UserExtraInfoResponse, UserInfo>() {
-            @Override
-            public UserInfo apply(UserBaseInfoResponse userBaseInfoResponse, UserExtraInfoResponse userExtraInfoResponse) throws Exception {
-                return new UserInfo(userBaseInfoResponse, userExtraInfoResponse);
-            }
-        }).observeOn(AndroidSchedulers.mainThread())
-                .subscribe(new Consumer<UserInfo>() {
-                    @Override
-                    public void accept(UserInfo userInfo) throws Exception {
+        Observable.zip(observable1, observable2, UserInfo::new)
+                .observeOn(AndroidSchedulers.mainThread())
+                .subscribe(userInfo -> {
 
-                    }
-                }, new Consumer<Throwable>() {
-                    @Override
-                    public void accept(Throwable throwable) throws Exception {
+                }, throwable -> {
 
-                    }
                 });
     }
 
